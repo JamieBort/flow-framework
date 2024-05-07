@@ -399,6 +399,14 @@ public class FlowFrameworkIndicesHandler {
         updateTemplateInGlobalContext(documentId, template, listener, false);
     }
 
+    // When updating a template, we perform two get requests,
+    // one to check for the existence of the template (that we are going to overwrite),
+    // and a second one to get the provisioning status:
+
+    // We should query the state index once for the provisioning status,
+    // and assume if the state doesn't exist, the template doesn't either.
+    // Since we are overwriting the template it doesn't matter whether it exists if the state is other than NOT_STARTED.
+
     /**
      * Replaces a document in the global context index
      * @param documentId the document Id
@@ -418,38 +426,39 @@ public class FlowFrameworkIndicesHandler {
             listener.onFailure(new FlowFrameworkException(errorMessage, RestStatus.BAD_REQUEST));
             return;
         }
-        doesTemplateExist(documentId, templateExists -> {
-            if (templateExists) {
-                getProvisioningProgress(documentId, progress -> {
-                    if (ignoreNotStartedCheck || ProvisioningProgress.NOT_STARTED.equals(progress.orElse(null))) {
-                        IndexRequest request = new IndexRequest(GLOBAL_CONTEXT_INDEX).id(documentId);
-                        try (
-                            XContentBuilder builder = XContentFactory.jsonBuilder();
-                            ThreadContext.StoredContext context = client.threadPool().getThreadContext().stashContext()
-                        ) {
-                            Template encryptedTemplate = encryptorUtils.encryptTemplateCredentials(template);
-                            request.source(encryptedTemplate.toXContent(builder, ToXContent.EMPTY_PARAMS))
-                                .setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE);
-                            client.index(request, ActionListener.runBefore(listener, context::restore));
-                        } catch (Exception e) {
-                            String errorMessage = "Failed to update global_context entry : " + documentId;
-                            logger.error(errorMessage, e);
-                            listener.onFailure(new FlowFrameworkException(errorMessage, ExceptionsHelper.status(e)));
-                        }
-                    } else {
-                        String errorMessage = "The template can not be updated unless its provisioning state is NOT_STARTED: "
-                            + documentId
-                            + ". Deprovision the workflow to reset the state.";
-                        logger.error(errorMessage);
-                        listener.onFailure(new FlowFrameworkException(errorMessage, RestStatus.BAD_REQUEST));
-                    }
-                }, listener);
+        // This template gets overwritten.
+        // doesTemplateExist(documentId, templateExists -> {
+        // if (templateExists) {
+        getProvisioningProgress(documentId, progress -> {
+            if (ignoreNotStartedCheck || ProvisioningProgress.NOT_STARTED.equals(progress.orElse(null))) {
+                IndexRequest request = new IndexRequest(GLOBAL_CONTEXT_INDEX).id(documentId);
+                try (
+                    XContentBuilder builder = XContentFactory.jsonBuilder();
+                    ThreadContext.StoredContext context = client.threadPool().getThreadContext().stashContext()
+                ) {
+                    Template encryptedTemplate = encryptorUtils.encryptTemplateCredentials(template);
+                    request.source(encryptedTemplate.toXContent(builder, ToXContent.EMPTY_PARAMS))
+                        .setRefreshPolicy(WriteRequest.RefreshPolicy.IMMEDIATE);
+                    client.index(request, ActionListener.runBefore(listener, context::restore));
+                } catch (Exception e) {
+                    String errorMessage = "Failed to update global_context entry : " + documentId;
+                    logger.error(errorMessage, e);
+                    listener.onFailure(new FlowFrameworkException(errorMessage, ExceptionsHelper.status(e)));
+                }
             } else {
-                String errorMessage = "Failed to get template: " + documentId;
+                String errorMessage = "The template can not be updated unless its provisioning state is NOT_STARTED: "
+                    + documentId
+                    + ". Deprovision the workflow to reset the state.";
                 logger.error(errorMessage);
                 listener.onFailure(new FlowFrameworkException(errorMessage, RestStatus.BAD_REQUEST));
             }
         }, listener);
+        // } else {
+        // String errorMessage = "Failed to get template: " + documentId;
+        // logger.error(errorMessage);
+        // listener.onFailure(new FlowFrameworkException(errorMessage, RestStatus.BAD_REQUEST));
+        // }
+        // }, listener);
     }
 
     /**
